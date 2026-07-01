@@ -41,9 +41,10 @@ func (repo *AuctionRepository) FindAuctions(
 	productName string) ([]auction_entity.Auction, *internal_error.InternalError) {
 	filter := bson.M{}
 
-	if status != 0 {
-		filter["status"] = status
-	}
+	// this causes a problem when the status is 0, because it will not be added to the filter and will return all auctions, even the ones that are not active
+	// if status != 0 {
+	filter["status"] = status
+	// }
 
 	if category != "" {
 		filter["category"] = category

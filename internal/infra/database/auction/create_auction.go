@@ -2,11 +2,15 @@ package auction
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"time"
 
 	"github.com/juliocesarboaroli/auction-concurrency/configuration/logger"
 	"github.com/juliocesarboaroli/auction-concurrency/internal/entity/auction_entity"
 	"github.com/juliocesarboaroli/auction-concurrency/internal/internal_error"
 
+	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
 
@@ -19,14 +23,26 @@ type AuctionEntityMongo struct {
 	Status      auction_entity.AuctionStatus    `bson:"status"`
 	Timestamp   int64                           `bson:"timestamp"`
 }
+
 type AuctionRepository struct {
-	Collection *mongo.Collection
+	Collection      *mongo.Collection
+	auctionDuration time.Duration
+	onAuctionClosed func(string) // hook para testes; nil em produção
 }
 
 func NewAuctionRepository(database *mongo.Database) *AuctionRepository {
 	return &AuctionRepository{
-		Collection: database.Collection("auctions"),
+		Collection:      database.Collection("auctions"),
+		auctionDuration: getAuctionDuration(),
 	}
+}
+
+func getAuctionDuration() time.Duration {
+	duration, err := time.ParseDuration(os.Getenv("AUCTION_DURATION"))
+	if err != nil {
+		return 5 * time.Minute
+	}
+	return duration
 }
 
 func (ar *AuctionRepository) CreateAuction(
@@ -41,11 +57,32 @@ func (ar *AuctionRepository) CreateAuction(
 		Status:      auctionEntity.Status,
 		Timestamp:   auctionEntity.Timestamp.Unix(),
 	}
+
 	_, err := ar.Collection.InsertOne(ctx, auctionEntityMongo)
 	if err != nil {
 		logger.Error("Error trying to insert auction", err)
 		return internal_error.NewInternalServerError("Error trying to insert auction")
 	}
 
+	go ar.closeAuction(auctionEntity.Id, ar.auctionDuration)
+
 	return nil
+}
+
+func (ar *AuctionRepository) closeAuction(auctionId string, duration time.Duration) {
+	time.Sleep(duration)
+
+	filter := bson.M{"_id": auctionId}
+	update := bson.M{"$set": bson.M{"status": auction_entity.Completed}}
+
+	if _, err := ar.Collection.UpdateOne(context.Background(), filter, update); err != nil {
+		logger.Error(fmt.Sprintf("Error trying to close auction id=%s", auctionId), err)
+		return
+	}
+
+	logger.Info(fmt.Sprintf("Auction id=%s closed automatically", auctionId))
+
+	if ar.onAuctionClosed != nil {
+		ar.onAuctionClosed(auctionId)
+	}
 }
